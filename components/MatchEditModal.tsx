@@ -1,12 +1,13 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import type { Match, UpdateMatchPayload, MatchStatus } from '@/types';
+import type { Match, Team, UpdateMatchPayload, MatchStatus } from '@/types';
 import { updateMatch } from '@/lib/api';
 import { format } from 'date-fns';
 
 interface Props {
   match: Match;
+  teams: Team[];
   onClose: () => void;
   onSaved: (match: Match) => void;
 }
@@ -28,7 +29,7 @@ const STAGE_LABELS: Record<string, string> = {
   LOSERS_MATCH: 'Repescagem',
 };
 
-export default function MatchEditModal({ match, onClose, onSaved }: Props) {
+export default function MatchEditModal({ match, teams, onClose, onSaved }: Props) {
   console.log('[MatchEditModal] mounting for match', match?.id);
   const isKnockout = match.stage !== 'GROUP';
 
@@ -58,6 +59,9 @@ export default function MatchEditModal({ match, onClose, onSaved }: Props) {
       return '';
     }
   });
+
+  const [selectedHomeTeamId, setSelectedHomeTeamId] = useState<number | ''>(match.homeTeamId ?? '');
+  const [selectedAwayTeamId, setSelectedAwayTeamId] = useState<number | ''>(match.awayTeamId ?? '');
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -104,15 +108,12 @@ export default function MatchEditModal({ match, onClose, onSaved }: Props) {
       const payload: UpdateMatchPayload = {
         matchStatus: status,
         stadium: stadium || null,
-        matchDatetime: new Date(matchDatetime).toISOString(),
+        matchDate: new Date(matchDatetime).toISOString(),
       };
 
       if (canHaveScore) {
         payload.homeTeamScore = homeScore !== '' ? Number(homeScore) : null;
         payload.awayTeamScore = awayScore !== '' ? Number(awayScore) : null;
-      } else {
-        payload.homeTeamScore = null;
-        payload.awayTeamScore = null;
       }
 
       if (isKnockout && canHaveScore) {
@@ -126,6 +127,11 @@ export default function MatchEditModal({ match, onClose, onSaved }: Props) {
           payload.penaltyAwayScore = null;
         }
       }
+
+      if (isKnockout && selectedHomeTeamId !== '' && selectedHomeTeamId !== match.homeTeamId)
+        payload.homeTeam = selectedHomeTeamId;
+      if (isKnockout && selectedAwayTeamId !== '' && selectedAwayTeamId !== match.awayTeamId)
+        payload.awayTeam = selectedAwayTeamId;
 
       const updated = await updateMatch(match.id, payload);
       onSaved(updated);
@@ -187,7 +193,7 @@ export default function MatchEditModal({ match, onClose, onSaved }: Props) {
           className="px-6 py-4 flex items-center justify-between gap-4"
           style={{ borderBottom: '1px solid var(--border)', background: 'rgba(0,0,0,0.2)' }}
         >
-          <TeamDisplay team={match.homeTeam} align="left" />
+          <TeamDisplay team={match.homeTeam ?? { name: '?', flagUrl: null }} align="left" />
           <div className="text-center flex-shrink-0">
             {match.homeTeamScore !== null && match.awayTeamScore !== null ? (
               <span className="font-display font-bold text-2xl" style={{ color: 'var(--accent)' }}>
@@ -197,11 +203,51 @@ export default function MatchEditModal({ match, onClose, onSaved }: Props) {
               <span className="font-display text-lg" style={{ color: 'var(--text-dim)' }}>vs</span>
             )}
           </div>
-          <TeamDisplay team={match.awayTeam} align="right" />
+          <TeamDisplay team={match.awayTeam ?? { name: '?', flagUrl: null }} align="right" />
         </div>
 
         {/* Form */}
         <div className="px-6 py-5 space-y-5 max-h-[60vh] overflow-y-auto">
+
+          {/* Team assignment — all knockout matches */}
+          {isKnockout && (
+            <div
+              className="p-4 rounded-lg space-y-4"
+              style={{ background: 'var(--surface-2)', border: '1px solid rgba(0,212,255,0.3)' }}
+            >
+              <p className="text-xs font-display font-bold tracking-widest" style={{ color: 'var(--accent)' }}>
+                DEFINIR TIMES
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label>Time da Casa</Label>
+                  <select
+                    className="input"
+                    value={selectedHomeTeamId}
+                    onChange={(e) => setSelectedHomeTeamId(e.target.value === '' ? '' : Number(e.target.value))}
+                  >
+                    <option value="">Selecionar...</option>
+                    {teams.map((t) => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <Label>Time Visitante</Label>
+                  <select
+                    className="input"
+                    value={selectedAwayTeamId}
+                    onChange={(e) => setSelectedAwayTeamId(e.target.value === '' ? '' : Number(e.target.value))}
+                  >
+                    <option value="">Selecionar...</option>
+                    {teams.map((t) => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Status + Datetime */}
           <div className="grid grid-cols-2 gap-4">
@@ -251,7 +297,7 @@ export default function MatchEditModal({ match, onClose, onSaved }: Props) {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <p className="text-xs mb-1 truncate" style={{ color: 'var(--text-muted)' }}>
-                  {match.homeTeam.name}
+                  {match.homeTeam?.name ?? teams.find((t) => t.id === selectedHomeTeamId)?.name ?? 'Casa'}
                 </p>
                 <input
                   className="input"
@@ -265,7 +311,7 @@ export default function MatchEditModal({ match, onClose, onSaved }: Props) {
               </div>
               <div>
                 <p className="text-xs mb-1 truncate" style={{ color: 'var(--text-muted)' }}>
-                  {match.awayTeam.name}
+                  {match.awayTeam?.name ?? teams.find((t) => t.id === selectedAwayTeamId)?.name ?? 'Visitante'}
                 </p>
                 <input
                   className="input"
@@ -306,7 +352,7 @@ export default function MatchEditModal({ match, onClose, onSaved }: Props) {
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <p className="text-xs mb-1 truncate" style={{ color: 'var(--text-muted)' }}>
-                      {match.homeTeam.name} (pen.)
+                      {match.homeTeam?.name ?? 'Casa'} (pen.)
                     </p>
                     <input
                       className="input"
@@ -319,7 +365,7 @@ export default function MatchEditModal({ match, onClose, onSaved }: Props) {
                   </div>
                   <div>
                     <p className="text-xs mb-1 truncate" style={{ color: 'var(--text-muted)' }}>
-                      {match.awayTeam.name} (pen.)
+                      {match.awayTeam?.name ?? 'Visitante'} (pen.)
                     </p>
                     <input
                       className="input"

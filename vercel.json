@@ -1,0 +1,5 @@
+{
+  "crons": [
+    { "path": "/api/cron/sync-matches", "schedule": "* * * * *" }
+  ]
+}
