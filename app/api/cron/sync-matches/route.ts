@@ -15,15 +15,6 @@ function mapStatus(status: string): MatchStatus {
   return 'SCHEDULED';
 }
 
-function isToday(date: Date): boolean {
-  const now = new Date();
-  return (
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate()
-  );
-}
-
 export async function GET(request: NextRequest) {
   const isDev = process.env.NODE_ENV === 'development';
   if (!isDev) {
@@ -37,21 +28,7 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  const matchesRes = await fetch(`${API_URL}/tournaments/${TOURNAMENT_ID}/matches`, {
-    headers: { Authorization: `Bearer ${SYNC_API_SECRET}` },
-  });
-  if (!matchesRes.ok) {
-    return Response.json({ error: 'Failed to fetch matches' }, { status: 500 });
-  }
-  const { matches } = await matchesRes.json();
-  const todayMatches = matches.filter(
-    (m: any) => m.apiFutebolId !== null && isToday(new Date(m.matchDatetime))
-  );
-
-  if (todayMatches.length === 0) {
-    return Response.json({ updated: 0, checked: 0 });
-  }
-
+  // 1. Fetch live matches from API-Futebol first
   const liveRes = await fetch('https://api.api-futebol.com.br/v1/ao-vivo', {
     headers: { Authorization: `Bearer ${API_FUTEBOL_KEY}` },
   });
@@ -65,10 +42,26 @@ export async function GET(request: NextRequest) {
       .map((m) => [m.partida_id, m])
   );
 
+  if (liveMap.size === 0) {
+    return Response.json({ updated: 0, checked: 0 });
+  }
+
+  // 2. Fetch our matches and filter to those present in liveMap
+  const matchesRes = await fetch(`${API_URL}/tournaments/${TOURNAMENT_ID}/matches`, {
+    headers: { Authorization: `Bearer ${SYNC_API_SECRET}` },
+  });
+  if (!matchesRes.ok) {
+    return Response.json({ error: 'Failed to fetch matches' }, { status: 500 });
+  }
+  const { matches } = await matchesRes.json();
+  const liveMatches = matches.filter(
+    (m: any) => m.apiFutebolId !== null && liveMap.has(m.apiFutebolId)
+  );
+
+  // 3. Diff and update changed matches
   let updated = 0;
-  for (const match of todayMatches) {
+  for (const match of liveMatches) {
     const live = liveMap.get(match.apiFutebolId);
-    if (!live) continue;
 
     const newStatus = mapStatus(live.status);
     const scoreChanged =
@@ -104,5 +97,5 @@ export async function GET(request: NextRequest) {
     if (updateRes.ok) updated++;
   }
 
-  return Response.json({ updated, checked: todayMatches.length });
+  return Response.json({ updated, checked: liveMatches.length });
 }
