@@ -9,7 +9,7 @@ const TOURNAMENT_ID = process.env.TOURNAMENT_ID!;
 type MatchStatus = 'SCHEDULED' | 'IN_PROGRESS' | 'COMPLETED' | 'POSTPONED';
 
 function mapStatus(status: string): MatchStatus {
-  if (status === 'ao_vivo' || status === 'intervalo') return 'IN_PROGRESS';
+  if (status === 'ao_vivo' || status === 'intervalo' || status === 'andamento') return 'IN_PROGRESS';
   if (status === 'encerrado') return 'COMPLETED';
   if (status === 'cancelado' || status === 'suspenso') return 'POSTPONED';
   return 'SCHEDULED';
