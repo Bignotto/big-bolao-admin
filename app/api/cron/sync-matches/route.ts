@@ -26,8 +26,15 @@ function isToday(date: Date): boolean {
 
 export async function GET(request: NextRequest) {
   const isDev = process.env.NODE_ENV === 'development';
-  if (!isDev && request.headers.get('Authorization') !== `Bearer ${process.env.CRON_SECRET}`) {
-    return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!isDev) {
+    const cronSecret = process.env.CRON_SECRET;
+    if (!cronSecret) {
+      console.error('CRON_SECRET is not set');
+      return Response.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
+    }
+    if (request.headers.get('Authorization') !== `Bearer ${cronSecret}`) {
+      return Response.json({ error: 'Unauthorized' }, { status: 401 });
+    }
   }
 
   const matchesRes = await fetch(`${API_URL}/tournaments/${TOURNAMENT_ID}/matches`, {
