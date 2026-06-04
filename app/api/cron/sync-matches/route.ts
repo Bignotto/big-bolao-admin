@@ -36,11 +36,16 @@ export async function GET(request: NextRequest) {
     return Response.json({ error: 'Failed to fetch live data' }, { status: 500 });
   }
   const allLive: any[] = await liveRes.json();
+  console.log(`[sync] API-Futebol returned ${allLive.length} live matches`);
+  console.log(`[sync] championship IDs in response:`, [...new Set(allLive.map((m) => m.campeonato.campeonato_id))]);
+  console.log(`[sync] filtering for CHAMPIONSHIP_ID=${CHAMPIONSHIP_ID} (type: ${typeof CHAMPIONSHIP_ID})`);
+
   const liveMap = new Map(
     allLive
       .filter((m) => m.campeonato.campeonato_id === CHAMPIONSHIP_ID)
       .map((m) => [m.partida_id, m])
   );
+  console.log(`[sync] liveMap size after filter: ${liveMap.size}`);
 
   if (liveMap.size === 0) {
     return Response.json({ updated: 0, checked: 0 });
@@ -54,6 +59,8 @@ export async function GET(request: NextRequest) {
     return Response.json({ error: 'Failed to fetch matches' }, { status: 500 });
   }
   const { matches } = await matchesRes.json();
+  console.log(`[sync] DB returned ${matches.length} matches for tournament ${TOURNAMENT_ID}`);
+  console.log(`[sync] apiFutebolIds in DB:`, matches.map((m: any) => m.apiFutebolId).filter(Boolean));
   const liveMatches = matches.filter(
     (m: any) => m.apiFutebolId !== null && liveMap.has(m.apiFutebolId)
   );
