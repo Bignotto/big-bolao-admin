@@ -52,3 +52,5 @@ npm run build && npm start
 
 O backend atual (`PUT /matches/:matchId`) **não suporta atualização de homeTeamId/awayTeamId**.
 Para partidas de mata-mata com times indefinidos, a atribuição deve ser feita diretamente no banco.
+
+update!
