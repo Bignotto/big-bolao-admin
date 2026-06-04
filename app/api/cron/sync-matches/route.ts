@@ -106,3 +106,4 @@ export async function GET(request: NextRequest) {
 
   return Response.json({ updated, checked: liveMatches.length });
 }
+//force update and vercel redeploy
