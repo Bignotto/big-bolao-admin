@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 
-const API_URL = process.env.BIG_BOLAO_API_URL!;
+const API_URL = process.env.NEXT_PUBLIC_API_URL!;
 const SYNC_API_SECRET = process.env.SYNC_API_SECRET!;
 const API_FUTEBOL_KEY = process.env.API_FUTEBOL_KEY!;
 const CHAMPIONSHIP_ID = Number(process.env.API_FUTEBOL_CHAMPIONSHIP_ID);
