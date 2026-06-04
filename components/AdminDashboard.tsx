@@ -1,9 +1,9 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { getTournaments, getTournamentMatches } from '@/lib/api';
-import type { Tournament, Match, MatchStage, MatchStatus } from '@/types';
+import type { Tournament, Match, Team, MatchStage, MatchStatus } from '@/types';
 import LoginPage from './LoginPage';
 import MatchEditModal from './MatchEditModal';
 import { format } from 'date-fns';
@@ -51,6 +51,19 @@ export default function AdminDashboard() {
   const [selectedTournament, setSelectedTournament] = useState<number | null>(null);
   const [matches, setMatches] = useState<Match[]>([]);
   const [loadingMatches, setLoadingMatches] = useState(false);
+
+  const teams = useMemo(
+    () =>
+      Array.from(
+        new Map(
+          matches
+            .flatMap((m) => [m.homeTeam, m.awayTeam])
+            .filter((t): t is Team => t != null)
+            .map((t) => [t.id, t])
+        ).values()
+      ),
+    [matches]
+  );
 
   // Filters
   const [filterStage, setFilterStage] = useState<string>('');
@@ -114,8 +127,8 @@ export default function AdminDashboard() {
     if (!search) return true;
     const q = search.toLowerCase();
     return (
-      m.homeTeam.name.toLowerCase().includes(q) ||
-      m.awayTeam.name.toLowerCase().includes(q) ||
+      (m.homeTeam?.name ?? '').toLowerCase().includes(q) ||
+      (m.awayTeam?.name ?? '').toLowerCase().includes(q) ||
       (m.stadium ?? '').toLowerCase().includes(q) ||
       String(m.id).includes(q)
     );
@@ -351,6 +364,7 @@ export default function AdminDashboard() {
       {editingMatch && (
         <MatchEditModal
           match={editingMatch}
+          teams={teams}
           onClose={() => setEditingMatch(null)}
           onSaved={handleSaved}
         />

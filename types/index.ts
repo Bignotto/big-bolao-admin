@@ -19,9 +19,10 @@ export interface Team {
 export interface Match {
   id: number;
   tournamentId: number;
-  homeTeamId: number;
-  awayTeamId: number;
+  homeTeamId: number | null;
+  awayTeamId: number | null;
   matchDatetime: string;
+  apiFutebolId: number | null;
   stadium: string | null;
   stage: MatchStage;
   group: string | null;
@@ -32,8 +33,8 @@ export interface Match {
   hasPenalties: boolean;
   penaltyHomeScore: number | null;
   penaltyAwayScore: number | null;
-  homeTeam: Team;
-  awayTeam: Team;
+  homeTeam: Team | null;
+  awayTeam: Team | null;
 }
 
 export interface Tournament {
@@ -55,6 +56,8 @@ export interface UpdateMatchPayload {
   hasPenalties?: boolean;
   penaltyHomeScore?: number | null;
   penaltyAwayScore?: number | null;
-  matchDatetime?: string;
+  matchDate?: string;
   stadium?: string | null;
+  homeTeam?: number;
+  awayTeam?: number;
 }
