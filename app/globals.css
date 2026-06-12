@@ -122,3 +122,19 @@ select.input {
 
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
 .animate-pulse-slow { animation: pulse 2s infinite; }
+
+.card-interactive {
+  transition: border-color 0.15s, background 0.15s;
+  cursor: pointer;
+}
+.card-interactive:hover { background: var(--surface-2); border-color: var(--border-bright); }
+.card-interactive:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-in, .modal-in, .animate-pulse-slow { animation: none; }
+  * { transition-duration: 0.01ms !important; }
+}

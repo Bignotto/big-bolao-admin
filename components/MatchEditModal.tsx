@@ -30,7 +30,6 @@ const STAGE_LABELS: Record<string, string> = {
 };
 
 export default function MatchEditModal({ match, teams, onClose, onSaved }: Props) {
-  console.log('[MatchEditModal] mounting for match', match?.id);
   const isKnockout = match.stage !== 'GROUP';
 
   // Form state
