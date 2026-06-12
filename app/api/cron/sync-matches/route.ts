@@ -28,7 +28,44 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // 1. Fetch live matches from API-Futebol first
+  // 1. Check ESPN scoreboard — free, no api-futebol credit cost
+  const espnRes = await fetch(
+    'https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard'
+  );
+
+  let shouldSync = false;
+  if (espnRes.ok) {
+    const espnBody = await espnRes.json() as {
+      events: Array<{ date: string; status: { type: { name: string } } }>;
+    };
+    shouldSync = espnBody.events.some((e) => {
+      const s = e.status.type.name;
+      return s === 'STATUS_IN_PROGRESS' || s === 'STATUS_HALFTIME';
+    });
+    console.log(`[sync] ESPN events: ${espnBody.events.length}, shouldSync: ${shouldSync}`);
+  } else {
+    // ESPN down — fall through and let api-futebol decide
+    console.warn(`[sync] ESPN check failed (${espnRes.status}) — proceeding anyway`);
+    shouldSync = true;
+  }
+
+  if (!shouldSync) {
+    console.log('[sync] no active matches per ESPN — skipping api-futebol call');
+    return Response.json({ skipped: true, reason: 'no active matches' });
+  }
+
+  // 2. Fetch our matches (free — our own API)
+  const matchesRes = await fetch(`${API_URL}/tournaments/${TOURNAMENT_ID}/matches`, {
+    headers: { Authorization: `Bearer ${SYNC_API_SECRET}` },
+  });
+  if (!matchesRes.ok) {
+    return Response.json({ error: 'Failed to fetch matches' }, { status: 500 });
+  }
+  const { matches } = await matchesRes.json();
+  console.log(`[sync] DB returned ${matches.length} matches for tournament ${TOURNAMENT_ID}`);
+  console.log(`[sync] apiFutebolIds in DB:`, matches.map((m: any) => m.apiFutebolId).filter(Boolean));
+
+  // 3. Call api-futebol /ao-vivo (1 credit — only reached when ESPN says live)
   const liveRes = await fetch('https://api.api-futebol.com.br/v1/ao-vivo', {
     headers: { Authorization: `Bearer ${API_FUTEBOL_KEY}` },
   });
@@ -47,25 +84,11 @@ export async function GET(request: NextRequest) {
   );
   console.log(`[sync] liveMap size after filter: ${liveMap.size}`);
 
-  if (liveMap.size === 0) {
-    return Response.json({ updated: 0, checked: 0 });
-  }
-
-  // 2. Fetch our matches and filter to those present in liveMap
-  const matchesRes = await fetch(`${API_URL}/tournaments/${TOURNAMENT_ID}/matches`, {
-    headers: { Authorization: `Bearer ${SYNC_API_SECRET}` },
-  });
-  if (!matchesRes.ok) {
-    return Response.json({ error: 'Failed to fetch matches' }, { status: 500 });
-  }
-  const { matches } = await matchesRes.json();
-  console.log(`[sync] DB returned ${matches.length} matches for tournament ${TOURNAMENT_ID}`);
-  console.log(`[sync] apiFutebolIds in DB:`, matches.map((m: any) => m.apiFutebolId).filter(Boolean));
+  // 4. Diff and update changed matches
   const liveMatches = matches.filter(
     (m: any) => m.apiFutebolId !== null && liveMap.has(m.apiFutebolId)
   );
 
-  // 3. Diff and update changed matches
   let updated = 0;
   for (const match of liveMatches) {
     const live = liveMap.get(match.apiFutebolId);
@@ -106,4 +129,3 @@ export async function GET(request: NextRequest) {
 
   return Response.json({ updated, checked: liveMatches.length });
 }
-//force update and vercel redeploy
