@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { getTournaments, getTournamentMatches } from '@/lib/api';
 import type { Tournament, Match, Team, MatchStage, MatchStatus } from '@/types';
@@ -75,10 +75,10 @@ export default function AdminDashboard() {
 
   // Toast
   const [toasts, setToasts] = useState<Toast[]>([]);
-  let toastId = 0;
+  const toastIdRef = useRef(0);
 
   function addToast(type: 'success' | 'error', message: string) {
-    const id = ++toastId;
+    const id = ++toastIdRef.current;
     setToasts((prev) => [...prev, { id, type, message }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4000);
   }
@@ -168,7 +168,7 @@ export default function AdminDashboard() {
           zIndex: 100,
         }}
       >
-        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-4">
           {/* Logo */}
           <div className="flex items-center gap-3 flex-shrink-0">
             <div
@@ -234,7 +234,7 @@ export default function AdminDashboard() {
           zIndex: 99,
         }}
       >
-        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center gap-3 flex-wrap">
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 py-3 flex items-center gap-3 flex-wrap">
           {/* Search */}
           <div className="relative flex-1" style={{ minWidth: 200, maxWidth: 300 }}>
             <svg
@@ -310,7 +310,7 @@ export default function AdminDashboard() {
       </div>
 
       {/* Content */}
-      <main className="max-w-7xl mx-auto px-4 py-6">
+      <main className="max-w-4xl mx-auto px-4 sm:px-6 py-6">
         {loadingMatches && matches.length === 0 ? (
           <div className="flex items-center justify-center py-32">
             <div className="text-center">
@@ -350,7 +350,7 @@ export default function AdminDashboard() {
                     <MatchRow
                       key={match.id}
                       match={match}
-                      onEdit={() => { console.log('[Dashboard] opening match', match.id); setEditingMatch(match); }}
+                      onEdit={() => setEditingMatch(match)}
                     />
                   ))}
                 </div>
@@ -388,9 +388,11 @@ function MatchRow({ match, onEdit }: { match: Match; onEdit: () => void }) {
 
   return (
     <div
-      className="card flex items-center gap-4 px-4 py-3 transition-all duration-150 cursor-pointer group"
-      style={{ transition: 'border-color 0.15s, background 0.15s' }}
+      className="card card-interactive flex items-center gap-4 px-4 py-3 group"
+      role="button"
+      tabIndex={0}
       onClick={onEdit}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onEdit(); }}
     >
       {/* ID */}
       <span
