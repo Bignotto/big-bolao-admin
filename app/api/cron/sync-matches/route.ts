@@ -59,7 +59,9 @@ export async function GET(request: NextRequest) {
   const matchesUrl = `${API_URL}/tournaments/${TOURNAMENT_ID}/matches`;
   console.log(`[sync] fetching matches from: ${matchesUrl}`);
   console.log(`[sync] SYNC_API_SECRET defined: ${!!SYNC_API_SECRET}, length: ${SYNC_API_SECRET?.length ?? 0}`);
-  const matchesRes = await fetch(matchesUrl);
+  const matchesRes = await fetch(matchesUrl, {
+    headers: { Authorization: `Bearer ${SYNC_API_SECRET}` },
+  });
   if (!matchesRes.ok) {
     const body = await matchesRes.text().catch(() => '(unreadable)');
     console.error(`[sync] failed to fetch matches: ${matchesRes.status} ${body}`);
