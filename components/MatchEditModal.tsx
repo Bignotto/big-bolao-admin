@@ -3,7 +3,17 @@
 import { useState, useEffect } from 'react';
 import type { Match, Team, UpdateMatchPayload, MatchStatus } from '@/types';
 import { updateMatch } from '@/lib/api';
-import { format } from 'date-fns';
+
+function toUTCDatetimeLocal(iso: string): string {
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}T${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+  } catch {
+    return '';
+  }
+}
 
 interface Props {
   match: Match;
@@ -49,15 +59,8 @@ export default function MatchEditModal({ match, teams, onClose, onSaved }: Props
     match.penaltyAwayScore !== null ? String(match.penaltyAwayScore) : ''
   );
   const [stadium, setStadium] = useState(match.stadium ?? '');
-  const [matchDatetime, setMatchDatetime] = useState(() => {
-    try {
-      const d = new Date(match.matchDatetime);
-      if (isNaN(d.getTime())) return '';
-      return format(d, "yyyy-MM-dd'T'HH:mm");
-    } catch {
-      return '';
-    }
-  });
+  const originalDatetimeUTC = toUTCDatetimeLocal(match.matchDatetime);
+  const [matchDatetime, setMatchDatetime] = useState(originalDatetimeUTC);
 
   const [selectedHomeTeamId, setSelectedHomeTeamId] = useState<number | ''>(match.homeTeamId ?? '');
   const [selectedAwayTeamId, setSelectedAwayTeamId] = useState<number | ''>(match.awayTeamId ?? '');
@@ -107,8 +110,12 @@ export default function MatchEditModal({ match, teams, onClose, onSaved }: Props
       const payload: UpdateMatchPayload = {
         matchStatus: status,
         stadium: stadium || null,
-        matchDate: new Date(matchDatetime).toISOString(),
       };
+
+      // Only send matchDate if the user changed it; backend rejects past dates
+      if (matchDatetime && matchDatetime !== originalDatetimeUTC) {
+        payload.matchDate = matchDatetime + ':00.000Z';
+      }
 
       if (canHaveScore) {
         payload.homeTeamScore = homeScore !== '' ? Number(homeScore) : null;
@@ -263,7 +270,7 @@ export default function MatchEditModal({ match, teams, onClose, onSaved }: Props
               </select>
             </div>
             <div>
-              <Label>Data / Hora (local)</Label>
+              <Label>Data / Hora (UTC)</Label>
               <input
                 className="input"
                 type="datetime-local"

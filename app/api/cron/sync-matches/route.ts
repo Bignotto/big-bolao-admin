@@ -56,10 +56,13 @@ export async function GET(request: NextRequest) {
   }
 
   // 1. Fetch our matches first — needed to check for stuck IN_PROGRESS (free, our API)
-  const matchesRes = await fetch(`${API_URL}/tournaments/${TOURNAMENT_ID}/matches`, {
-    headers: { Authorization: `Bearer ${SYNC_API_SECRET}` },
-  });
+  const matchesUrl = `${API_URL}/tournaments/${TOURNAMENT_ID}/matches`;
+  console.log(`[sync] fetching matches from: ${matchesUrl}`);
+  console.log(`[sync] SYNC_API_SECRET defined: ${!!SYNC_API_SECRET}, length: ${SYNC_API_SECRET?.length ?? 0}`);
+  const matchesRes = await fetch(matchesUrl);
   if (!matchesRes.ok) {
+    const body = await matchesRes.text().catch(() => '(unreadable)');
+    console.error(`[sync] failed to fetch matches: ${matchesRes.status} ${body}`);
     return Response.json({ error: 'Failed to fetch matches' }, { status: 500 });
   }
   const { matches } = await matchesRes.json();
@@ -84,7 +87,9 @@ export async function GET(request: NextRequest) {
       const s = e.status.type.name;
       return s === 'STATUS_IN_PROGRESS' || s === 'STATUS_HALFTIME';
     });
+    const espnStatuses = espnEvents.map((e) => ({ date: e.date, status: e.status.type.name, completed: e.status.type.completed }));
     console.log(`[sync] ESPN events: ${espnEvents.length}, espnHasLive: ${espnHasLive}`);
+    console.log(`[sync] ESPN event statuses:`, JSON.stringify(espnStatuses));
   } else {
     console.warn(`[sync] ESPN check failed (${espnRes.status}) — proceeding anyway`);
     espnHasLive = true;
@@ -113,16 +118,12 @@ export async function GET(request: NextRequest) {
 
   const liveMap = new Map(
     allLive
-      .filter((m) => m.campeonato.campeonato_id === CHAMPIONSHIP_ID)
+      .filter((m) => m.campeonato.campeonato_id === CHAMPIONSHIP_ID && m.status !== 'pre-jogo')
       .map((m) => [m.partida_id, m])
   );
   console.log(`[sync] liveMap size after filter: ${liveMap.size}`);
   for (const [id, m] of liveMap) {
-    console.log(
-      `[sync] live match id=${id} status=${m.status}` +
-      ` home=${m.mandante?.time_nome ?? '?'} ${m.placar_mandante}` +
-      ` away=${m.visitante?.time_nome ?? '?'} ${m.placar_visitante}`
-    );
+    console.log(`[sync] live match raw id=${id}:`, JSON.stringify(m));
   }
 
   // 4. Diff and update matches that are in the api-futebol live feed
@@ -140,9 +141,13 @@ export async function GET(request: NextRequest) {
       live.placar_mandante !== match.homeTeamScore ||
       live.placar_visitante !== match.awayTeamScore;
     const statusChanged = newStatus !== match.matchStatus;
+    // Only consider penalties changed if a shootout is actually in progress.
+    // Without this guard, the API returning placar_penaltis_mandante=0 (not null)
+    // on a pre-game match produces a false positive against null DB values.
     const penaltiesChanged =
-      live.placar_penaltis_mandante !== match.penaltyHomeScore ||
-      live.placar_penaltis_visitante !== match.penaltyAwayScore;
+      !!live.disputa_penalti &&
+      ((live.placar_penaltis_mandante ?? null) !== (match.penaltyHomeScore ?? null) ||
+        (live.placar_penaltis_visitante ?? null) !== (match.penaltyAwayScore ?? null));
 
     console.log(
       `[sync] match ${match.id} (apiFutebolId=${match.apiFutebolId})` +
@@ -153,11 +158,10 @@ export async function GET(request: NextRequest) {
 
     if (!scoreChanged && !statusChanged && !penaltiesChanged) continue;
 
-    const body: Record<string, unknown> = {
-      homeTeamScore: live.placar_mandante,
-      awayTeamScore: live.placar_visitante,
-      matchStatus: newStatus,
-    };
+    // Only send scores when they are non-null; the backend rejects null scores.
+    const body: Record<string, unknown> = { matchStatus: newStatus };
+    if (live.placar_mandante !== null) body.homeTeamScore = live.placar_mandante;
+    if (live.placar_visitante !== null) body.awayTeamScore = live.placar_visitante;
     if (live.disputa_penalti) {
       body.hasPenalties = true;
       body.penaltyHomeScore = live.placar_penaltis_mandante;
