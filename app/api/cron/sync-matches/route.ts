@@ -188,52 +188,73 @@ export async function GET(request: NextRequest) {
   }
 
   // 5. Close out IN_PROGRESS matches that have dropped off the api-futebol live feed.
-  //    Use ESPN scoreboard (already fetched, free) to get the final score.
+  //    Fetch the individual match from API Futebol so we get the authoritative final score,
+  //    capturing any last-minute goals that happened before the match dropped off ao-vivo.
+  //    ESPN is used only as a fallback to confirm completion when the API Futebol call fails.
   const stuckMatches = inProgressInDB.filter((m) => !liveMap.has(m.apiFutebolId));
   console.log(`[sync] stuck IN_PROGRESS not in live feed: ${stuckMatches.length}`);
 
   for (const match of stuckMatches) {
-    const espnEvent = findEspnEvent(match.matchDatetime, espnEvents);
-    if (!espnEvent) {
-      console.warn(`[sync] no ESPN event found for stuck match ${match.id} (apiFutebolId=${match.apiFutebolId})`);
+    const partidaRes = await fetch(
+      `https://api.api-futebol.com.br/v1/partidas/${match.apiFutebolId}`,
+      { headers: { Authorization: `Bearer ${API_FUTEBOL_KEY}` } }
+    );
+
+    if (!partidaRes.ok) {
+      console.warn(
+        `[sync] API-Futebol /partidas/${match.apiFutebolId} failed (${partidaRes.status})` +
+        ` — falling back to ESPN detection for match ${match.id}`
+      );
+      // Fallback: ESPN tells us if finished, but we keep the DB score (last written by API Futebol).
+      const espnEvent = findEspnEvent(match.matchDatetime, espnEvents);
+      if (!espnEvent) continue;
+      const espnStatus = espnEvent.status.type.name;
+      const isFinished =
+        espnEvent.status.type.completed ||
+        espnStatus === 'STATUS_FINAL' ||
+        espnStatus === 'STATUS_FULL_TIME' ||
+        espnStatus === 'STATUS_FT';
+      if (!isFinished) {
+        console.log(`[sync] ESPN shows match ${match.id} as ${espnStatus} — not closing out yet`);
+        continue;
+      }
+      console.log(`[sync] closing out match ${match.id} via ESPN fallback (status only, keeping DB score)`);
+      const fallbackRes = await fetch(`${API_URL}/matches/${match.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SYNC_API_SECRET}` },
+        body: JSON.stringify({ matchStatus: 'COMPLETED' }),
+      });
+      if (fallbackRes.ok) updated++;
+      else console.error(`[sync] failed to close out match ${match.id} via fallback: ${fallbackRes.status}`);
       continue;
     }
 
-    const espnStatus = espnEvent.status.type.name;
-    // Only close out if ESPN confirms the game is finished
-    const isFinished =
-      espnEvent.status.type.completed ||
-      espnStatus === 'STATUS_FINAL' ||
-      espnStatus === 'STATUS_FULL_TIME' ||
-      espnStatus === 'STATUS_FT';
-    if (!isFinished) {
-      console.log(`[sync] ESPN shows match ${match.id} as ${espnStatus} — not closing out yet`);
+    const partida = await partidaRes.json();
+    console.log(`[sync] API-Futebol partida ${match.apiFutebolId} status=${partida.status}`);
+
+    if (partida.status !== 'finalizado') {
+      console.log(`[sync] match ${match.id} not yet finalizado — not closing out`);
       continue;
     }
 
-    const comp = espnEvent.competitions[0];
-    const home = comp?.competitors.find((c) => c.homeAway === 'home');
-    const away = comp?.competitors.find((c) => c.homeAway === 'away');
-    if (!home || !away) {
-      console.warn(`[sync] ESPN event missing competitor data for match ${match.id}`);
-      continue;
+    const body: Record<string, unknown> = { matchStatus: 'COMPLETED' };
+    if (partida.placar_mandante !== null) body.homeTeamScore = partida.placar_mandante;
+    if (partida.placar_visitante !== null) body.awayTeamScore = partida.placar_visitante;
+    if (partida.disputa_penalti) {
+      body.hasPenalties = true;
+      body.penaltyHomeScore = partida.disputa_penalti.placar_penalti_mandante;
+      body.penaltyAwayScore = partida.disputa_penalti.placar_penalti_visitante;
     }
 
-    const homeScore = parseInt(home.score, 10);
-    const awayScore = parseInt(away.score, 10);
-    console.log(`[sync] closing out match ${match.id} via ESPN: ${homeScore}-${awayScore} (${espnStatus})`);
+    console.log(
+      `[sync] closing out match ${match.id} via API-Futebol:` +
+      ` ${partida.placar_mandante}-${partida.placar_visitante}`
+    );
 
     const updateRes = await fetch(`${API_URL}/matches/${match.id}`, {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${SYNC_API_SECRET}`,
-      },
-      body: JSON.stringify({
-        homeTeamScore: homeScore,
-        awayTeamScore: awayScore,
-        matchStatus: 'COMPLETED',
-      }),
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SYNC_API_SECRET}` },
+      body: JSON.stringify(body),
     });
 
     if (updateRes.ok) updated++;

@@ -2,26 +2,49 @@
 
 ## Overview
 
-A Vercel Cron Job in the `match-editor` Next.js project runs every minute and syncs live
+A Vercel Cron Job in the `match-editor` Next.js project runs every 5 minutes and syncs live
 World Cup scores into big-bolao-api. It polls API-Futebol for live data and calls the
 `PUT /matches/:id` endpoint for any match where the score or status has changed.
 
+**Design principle:** API-Futebol is the sole source of truth for scores. ESPN is used only
+as a free gate to avoid burning API-Futebol credits when no matches are active, and as a
+last-resort signal to detect match completion when the API-Futebol call fails. ESPN scores
+are never written to the database.
+
 ```
-[Vercel Cron — every 1 minute]
+[Vercel Cron — every 5 minutes]
   │
   ├─ 1. GET  {BIG_BOLAO_API_URL}/tournaments/{TOURNAMENT_ID}/matches
   │         Authorization: Bearer {SYNC_API_SECRET}
-  │         → filter: apiFutebolId != null && isToday(matchDatetime)
+  │         → identify matches with apiFutebolId != null
+  │         → identify matches stuck IN_PROGRESS
   │
-  ├─ 2. GET  https://api.api-futebol.com.br/v1/ao-vivo
+  ├─ 2. GET  https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard
+  │         (free, no credit cost)
+  │         → espnHasLive = any event with STATUS_IN_PROGRESS or STATUS_HALFTIME
+  │         → shouldSync  = espnHasLive OR inProgressInDB.length > 0
+  │
+  ├─ 3. [only if shouldSync]
+  │    GET  https://api.api-futebol.com.br/v1/ao-vivo          ← 1 credit
   │         Authorization: Bearer {API_FUTEBOL_KEY}
-  │         → filter: campeonato_id === API_FUTEBOL_CHAMPIONSHIP_ID
+  │         → filter: campeonato_id === API_FUTEBOL_CHAMPIONSHIP_ID && status !== 'pre-jogo'
   │         → build map: partida_id → liveMatch
   │
-  └─ 3. For each today's match found in the live map:
-            if score, status, or penalties changed:
-              PUT {BIG_BOLAO_API_URL}/matches/{match.id}
-              Authorization: Bearer {SYNC_API_SECRET}
+  ├─ 4. For each DB match found in the live map:
+  │         if score, status, or penalties changed:
+  │           PUT {BIG_BOLAO_API_URL}/matches/{match.id}
+  │           Authorization: Bearer {SYNC_API_SECRET}
+  │
+  └─ 5. For each IN_PROGRESS match NOT in the live map (dropped off ao-vivo):
+            GET  https://api.api-futebol.com.br/v1/partidas/{apiFutebolId}   ← 1 credit each
+            → if status === 'finalizado':
+                PUT {BIG_BOLAO_API_URL}/matches/{match.id}  { matchStatus: 'COMPLETED',
+                                                               placar_mandante, placar_visitante,
+                                                               penalties if present }
+            → if API-Futebol call fails:
+                use ESPN status to detect completion (isFinished check)
+                PUT {BIG_BOLAO_API_URL}/matches/{match.id}  { matchStatus: 'COMPLETED' only }
+                (keeps existing DB score — last written by API-Futebol)
 ```
 
 ---
@@ -142,11 +165,12 @@ Content-Type: application/json
 
 ---
 
-## API-Futebol Endpoint
+## API-Futebol Endpoints
 
-### GET /ao-vivo
+### GET /ao-vivo  *(1 credit per call)*
 
-Returns all currently live matches across all championships.
+Returns all currently live matches across all championships. Used in step 3 to sync
+in-progress scores.
 
 ```
 GET https://api.api-futebol.com.br/v1/ao-vivo
@@ -173,13 +197,15 @@ Authorization: Bearer {API_FUTEBOL_KEY}
 ]
 ```
 
-**Status mapping:**
+**Status mapping (ao-vivo):**
 
 | API-Futebol `status` | big-bolao-api `matchStatus` |
 |---|---|
 | `agendado` | `SCHEDULED` |
+| `pre-jogo` | `SCHEDULED` (filtered out — excluded from liveMap) |
 | `ao_vivo` | `IN_PROGRESS` |
 | `intervalo` | `IN_PROGRESS` |
+| `andamento` | `IN_PROGRESS` |
 | `encerrado` | `COMPLETED` |
 | `cancelado` | `POSTPONED` |
 | `suspenso` | `POSTPONED` |
@@ -187,6 +213,46 @@ Authorization: Bearer {API_FUTEBOL_KEY}
 Filter by: `m.campeonato.campeonato_id === Number(API_FUTEBOL_CHAMPIONSHIP_ID)`
 
 Key for cross-reference: `partida_id` maps to `match.apiFutebolId` in big-bolao-api.
+
+---
+
+### GET /partidas/:partida_id  *(1 credit per call)*
+
+Returns full details for a single match, including the final score after the match ends.
+Used in step 5 to close out matches that have dropped off `/ao-vivo`, capturing any
+last-minute goals before marking the match COMPLETED.
+
+```
+GET https://api.api-futebol.com.br/v1/partidas/{apiFutebolId}
+Authorization: Bearer {API_FUTEBOL_KEY}
+```
+
+**Response (relevant fields):**
+```json
+{
+  "partida_id": 38291,
+  "placar_mandante": 2,
+  "placar_visitante": 1,
+  "disputa_penalti": {
+    "placar_penalti_mandante": 4,
+    "placar_penalti_visitante": 3
+  },
+  "status": "finalizado"
+}
+```
+
+> Note: penalty key names differ from `/ao-vivo`:
+> - `/ao-vivo` → `placar_penaltis_mandante` / `placar_penaltis_visitante`
+> - `/partidas/:id` → `disputa_penalti.placar_penalti_mandante` / `disputa_penalti.placar_penalti_visitante`
+
+**Status values (partidas endpoint):**
+
+| `status` | Meaning |
+|---|---|
+| `agendado` | Not started |
+| `pre-jogo` | Pre-match window |
+| `ao_vivo` | In progress |
+| `finalizado` | Match over — safe to mark COMPLETED |
 
 ---
 
@@ -218,122 +284,29 @@ Key for cross-reference: `partida_id` maps to `match.apiFutebolId` in big-bolao-
 ```json
 {
   "crons": [
-    { "path": "/api/cron/sync-matches", "schedule": "* * * * *" }
+    { "path": "/api/cron/sync-matches", "schedule": "*/5 * * * *" }
   ]
 }
 ```
 
-Vercel Hobby plan supports 2 cron jobs at a 60-second minimum interval.
+Vercel Hobby plan supports 2 cron jobs at a 60-second minimum interval. Running every 5 minutes
+is sufficient given the ESPN gate — the expensive API-Futebol call is skipped entirely when no
+matches are active.
 
 ---
 
 ### `app/api/cron/sync-matches/route.ts`
 
-```ts
-import { NextRequest } from 'next/server';
-
-const API_URL = process.env.BIG_BOLAO_API_URL!;
-const SYNC_API_SECRET = process.env.SYNC_API_SECRET!;
-const API_FUTEBOL_KEY = process.env.API_FUTEBOL_KEY!;
-const CHAMPIONSHIP_ID = Number(process.env.API_FUTEBOL_CHAMPIONSHIP_ID);
-const TOURNAMENT_ID = process.env.TOURNAMENT_ID!;
-
-type MatchStatus = 'SCHEDULED' | 'IN_PROGRESS' | 'COMPLETED' | 'POSTPONED';
-
-function mapStatus(status: string): MatchStatus {
-  if (status === 'ao_vivo' || status === 'intervalo') return 'IN_PROGRESS';
-  if (status === 'encerrado') return 'COMPLETED';
-  if (status === 'cancelado' || status === 'suspenso') return 'POSTPONED';
-  return 'SCHEDULED';
-}
-
-function isToday(date: Date): boolean {
-  const now = new Date();
-  return (
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate()
-  );
-}
-
-export async function GET(request: NextRequest) {
-  if (request.headers.get('Authorization') !== `Bearer ${process.env.CRON_SECRET}`) {
-    return Response.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  // 1. Fetch today's matches from big-bolao-api
-  const matchesRes = await fetch(`${API_URL}/tournaments/${TOURNAMENT_ID}/matches`, {
-    headers: { Authorization: `Bearer ${SYNC_API_SECRET}` },
-  });
-  if (!matchesRes.ok) {
-    return Response.json({ error: 'Failed to fetch matches' }, { status: 500 });
-  }
-  const { matches } = await matchesRes.json();
-  const todayMatches = matches.filter(
-    (m: any) => m.apiFutebolId !== null && isToday(new Date(m.matchDatetime))
-  );
-
-  if (todayMatches.length === 0) {
-    return Response.json({ updated: 0, checked: 0 });
-  }
-
-  // 2. Fetch live matches from API-Futebol
-  const liveRes = await fetch('https://api.api-futebol.com.br/v1/ao-vivo', {
-    headers: { Authorization: `Bearer ${API_FUTEBOL_KEY}` },
-  });
-  if (!liveRes.ok) {
-    return Response.json({ error: 'Failed to fetch live data' }, { status: 500 });
-  }
-  const allLive: any[] = await liveRes.json();
-  const liveMap = new Map(
-    allLive
-      .filter((m) => m.campeonato.campeonato_id === CHAMPIONSHIP_ID)
-      .map((m) => [m.partida_id, m])
-  );
-
-  // 3. Update changed matches
-  let updated = 0;
-  for (const match of todayMatches) {
-    const live = liveMap.get(match.apiFutebolId);
-    if (!live) continue;
-
-    const newStatus = mapStatus(live.status);
-    const scoreChanged =
-      live.placar_mandante !== match.homeTeamScore ||
-      live.placar_visitante !== match.awayTeamScore;
-    const statusChanged = newStatus !== match.matchStatus;
-    const penaltiesChanged =
-      live.placar_penaltis_mandante !== match.penaltyHomeScore ||
-      live.placar_penaltis_visitante !== match.penaltyAwayScore;
-
-    if (!scoreChanged && !statusChanged && !penaltiesChanged) continue;
-
-    const body: Record<string, unknown> = {
-      homeTeamScore: live.placar_mandante,
-      awayTeamScore: live.placar_visitante,
-      matchStatus: newStatus,
-    };
-    if (live.disputa_penalti) {
-      body.hasPenalties = true;
-      body.penaltyHomeScore = live.placar_penaltis_mandante;
-      body.penaltyAwayScore = live.placar_penaltis_visitante;
-    }
-
-    const updateRes = await fetch(`${API_URL}/matches/${match.id}`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${SYNC_API_SECRET}`,
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (updateRes.ok) updated++;
-  }
-
-  return Response.json({ updated, checked: todayMatches.length });
-}
-```
+> The canonical source of truth is the file at `app/api/cron/sync-matches/route.ts`.
+> See that file for the full implementation. Key behaviours:
+>
+> - Auth: dev bypass (`NODE_ENV === 'development'`) + `CRON_SECRET` header check in prod
+> - Step 2 ESPN gate: if ESPN fails, `espnHasLive` is set to `true` so we never silently skip
+> - Step 4 penalty guard: only flags `penaltiesChanged` when `disputa_penalti` is truthy,
+>   avoiding false positives from `placar_penaltis_mandante=0` on pre-match records
+> - Step 5 closeout: calls `/partidas/{apiFutebolId}` for the authoritative final score;
+>   ESPN is only a fallback when that call fails, and even then only `matchStatus` is sent
+>   (scores are never taken from ESPN)
 
 ---
 
