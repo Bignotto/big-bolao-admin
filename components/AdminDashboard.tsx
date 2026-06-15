@@ -6,8 +6,11 @@ import { getTournaments, getTournamentMatches } from '@/lib/api';
 import type { Tournament, Match, Team, MatchStage, MatchStatus } from '@/types';
 import LoginPage from './LoginPage';
 import MatchEditModal from './MatchEditModal';
-import { format } from 'date-fns';
-import { ptBR } from 'date-fns/locale';
+function fmtUTC(iso: string) {
+  const d = new Date(iso);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getUTCDate())}/${p(d.getUTCMonth() + 1)} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
 
 const STAGES: MatchStage[] = [
   'GROUP',
@@ -384,7 +387,6 @@ export default function AdminDashboard() {
 
 function MatchRow({ match, onEdit }: { match: Match; onEdit: () => void }) {
   const hasScore = match.homeTeamScore !== null && match.awayTeamScore !== null;
-  const matchDate = new Date(match.matchDatetime);
 
   return (
     <div
@@ -423,7 +425,7 @@ function MatchRow({ match, onEdit }: { match: Match; onEdit: () => void }) {
           <div>
             <span className="font-display font-bold text-base" style={{ color: 'var(--text-dim)' }}>vs</span>
             <div className="text-xs mt-0.5" style={{ color: 'var(--text-dim)' }}>
-              {format(matchDate, 'dd/MM HH:mm')}
+              {fmtUTC(match.matchDatetime)}
             </div>
           </div>
         )}
@@ -462,7 +464,7 @@ function MatchRow({ match, onEdit }: { match: Match; onEdit: () => void }) {
       {/* Datetime */}
       {hasScore && (
         <span className="text-xs flex-shrink-0 hidden md:block" style={{ color: 'var(--text-dim)' }}>
-          {format(matchDate, 'dd/MM HH:mm')}
+          {fmtUTC(match.matchDatetime)}
         </span>
       )}
 
