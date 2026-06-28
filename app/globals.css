@@ -43,6 +43,7 @@ body {
 .font-display { font-family: 'Barlow Condensed', sans-serif; }
 
 .stage-GROUP { background: rgba(26,32,48,0.8); color: #6b7a99; border-color: #252d3d; }
+.stage-ROUND_OF_32 { background: rgba(100,181,246,0.1); color: #64b5f6; border-color: #64b5f6; }
 .stage-ROUND_OF_16 { background: rgba(0,212,255,0.1); color: #00d4ff; border-color: #00d4ff; }
 .stage-QUARTER_FINAL { background: rgba(0,230,118,0.1); color: #00e676; border-color: #00e676; }
 .stage-SEMI_FINAL { background: rgba(255,215,64,0.1); color: #ffd740; border-color: #ffd740; }

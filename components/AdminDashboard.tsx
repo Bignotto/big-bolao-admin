@@ -14,6 +14,7 @@ function fmtUTC(iso: string) {
 
 const STAGES: MatchStage[] = [
   'GROUP',
+  'ROUND_OF_32',
   'ROUND_OF_16',
   'QUARTER_FINAL',
   'SEMI_FINAL',
@@ -24,6 +25,7 @@ const STAGES: MatchStage[] = [
 
 const STAGE_LABELS: Record<MatchStage, string> = {
   GROUP: 'Grupos',
+  ROUND_OF_32: '32 Avos',
   ROUND_OF_16: 'Oitavas',
   QUARTER_FINAL: 'Quartas',
   SEMI_FINAL: 'Semi',
@@ -111,8 +113,11 @@ export default function AdminDashboard() {
   const loadMatches = useCallback(() => {
     if (!selectedTournament) return;
     setLoadingMatches(true);
+    // ROUND_OF_32 is not recognized by the backend stage filter — fetch without stage and filter client-side.
+    // All 88 group + ROUND_OF_32 matches fit within limit=100 so no pagination is needed.
+    const apiStage = (filterStage && filterStage !== 'ROUND_OF_32') ? filterStage : undefined;
     getTournamentMatches(selectedTournament, {
-      stage: filterStage || undefined,
+      stage: apiStage,
       status: filterStatus || undefined,
       limit: 100,
     })
@@ -125,8 +130,9 @@ export default function AdminDashboard() {
     loadMatches();
   }, [loadMatches]);
 
-  // Filter by search
+  // Filter by search and stage (client-side covers all stages so transitions are instant)
   const filteredMatches = matches.filter((m) => {
+    if (filterStage && m.stage !== filterStage) return false;
     if (!search) return true;
     const q = search.toLowerCase();
     return (
