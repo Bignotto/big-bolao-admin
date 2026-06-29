@@ -23,6 +23,8 @@ function mapStatus(status: string): MatchStatus {
   if (status === 'ao_vivo' || status === 'intervalo' || status === 'andamento') return 'IN_PROGRESS';
   if (status === 'encerrado') return 'COMPLETED';
   if (status === 'cancelado' || status === 'suspenso') return 'POSTPONED';
+  if (status === 'agendado') return 'SCHEDULED';
+  console.warn(`[sync] mapStatus: unknown api-futebol status "${status}" — defaulting to SCHEDULED`);
   return 'SCHEDULED';
 }
 
@@ -125,7 +127,7 @@ export async function GET(request: NextRequest) {
   );
   console.log(`[sync] liveMap size after filter: ${liveMap.size}`);
   for (const [id, m] of liveMap) {
-    console.log(`[sync] live match raw id=${id}:`, JSON.stringify(m));
+    console.log(`[sync] live match id=${id} raw status="${m.status}" placar=${m.placar_mandante}-${m.placar_visitante} disputa_penalti=${!!m.disputa_penalti}`);
   }
 
   // 4. Diff and update matches that are in the api-futebol live feed

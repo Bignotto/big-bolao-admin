@@ -17,7 +17,10 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = await getAuthHeaders();
   const res = await fetch(`${API_URL}${path}`, { ...options, headers: { ...headers, ...options?.headers } });
   const body = await res.json();
-  if (!res.ok) throw new Error(body.message ?? body.error ?? body.detail ?? `API error ${res.status}`);
+  if (!res.ok) {
+    console.error('[api] error response:', res.status, JSON.stringify(body));
+    throw new Error(body.message ?? body.error ?? body.detail ?? `API error ${res.status}`);
+  }
   return body as T;
 }
 
