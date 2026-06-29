@@ -107,30 +107,33 @@ export default function MatchEditModal({ match, teams, onClose, onSaved }: Props
     }
 
     try {
-      const payload: UpdateMatchPayload = {
-        matchStatus: status,
-        stadium: stadium || null,
-      };
+      const payload: UpdateMatchPayload = { matchStatus: status };
+
+      // Only send stadium if it changed
+      if (stadium !== (match.stadium ?? '')) {
+        payload.stadium = stadium || null;
+      }
 
       // Only send matchDate if the user changed it; backend rejects past dates
       if (matchDatetime && matchDatetime !== originalDatetimeUTC) {
         payload.matchDate = matchDatetime + ':00.000Z';
       }
 
+      // Only send scores if they changed
       if (canHaveScore) {
-        payload.homeTeamScore = homeScore !== '' ? Number(homeScore) : null;
-        payload.awayTeamScore = awayScore !== '' ? Number(awayScore) : null;
+        const newHome = homeScore !== '' ? Number(homeScore) : null;
+        const newAway = awayScore !== '' ? Number(awayScore) : null;
+        if (newHome !== match.homeTeamScore) payload.homeTeamScore = newHome;
+        if (newAway !== match.awayTeamScore) payload.awayTeamScore = newAway;
       }
 
-      if (isKnockout && canHaveScore) {
-        payload.hasExtraTime = hasExtraTime;
-        payload.hasPenalties = hasPenalties;
+      // Only send knockout extras when explicitly set
+      if (isKnockout && canHaveScore && hasExtraTime) {
+        payload.hasExtraTime = true;
         if (hasPenalties) {
+          payload.hasPenalties = true;
           payload.penaltyHomeScore = penaltyHome !== '' ? Number(penaltyHome) : null;
           payload.penaltyAwayScore = penaltyAway !== '' ? Number(penaltyAway) : null;
-        } else {
-          payload.penaltyHomeScore = null;
-          payload.penaltyAwayScore = null;
         }
       }
 
@@ -139,6 +142,7 @@ export default function MatchEditModal({ match, teams, onClose, onSaved }: Props
       if (isKnockout && selectedAwayTeamId !== '' && selectedAwayTeamId !== match.awayTeamId)
         payload.awayTeam = selectedAwayTeamId;
 
+      console.log('[MatchEditModal] PUT payload:', JSON.stringify(payload, null, 2));
       const updated = await updateMatch(match.id, payload);
       onSaved(updated);
     } catch (err) {
