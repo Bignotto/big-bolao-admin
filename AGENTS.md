@@ -3,10 +3,12 @@
 
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
-# Big Bolão — Admin Panel
+# Big Bolão — Admin Panel and Automatic Results Updater
 
 Painel administrativo standalone em Next.js para gerenciar as partidas da Copa do Mundo 2026.
 Permite corrigir resultados quando o atualizador automático falha e definir os confrontos das fases eliminatórias.
+
+O objetivo principal deste projeto é manter o resultado dos jogos da copa atualizados ao vivo. A cada 5 minutos deve descobrir se há um jogo da copa do mundo de 2026 ativo, em tempo regulamentar, para atualizar o resultado do jogo para os usuários do nosso Big Bolão App. Quando há um jogo ao vivo, busca o resultado na API Futebol, serviço pago, que nos dá 100 chamadas por dia, por isso precisamos buscar os jogos em outro lugar antes, evitando assim chamadas desnecessárias à API. Deve considerar somente os 90 minutos do tempo regulamentar e atualizar o jogo como COMPLETED no backend. Deve considerar somente os gols dos 90 minutos. 
 
 ---
 
