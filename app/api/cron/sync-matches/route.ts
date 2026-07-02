@@ -8,6 +8,21 @@ const TOURNAMENT_ID = process.env.TOURNAMENT_ID!;
 
 type MatchStatus = 'SCHEDULED' | 'IN_PROGRESS' | 'COMPLETED' | 'POSTPONED';
 
+// Update window: a match is only tracked for 2h after kickoff (~90min + halftime
+// + stoppage). Past that, regulation is over — we close it out and ignore extra time.
+const LIVE_WINDOW_MS = 2 * 60 * 60 * 1000;
+
+// DB stores matchDatetime as America/Sao_Paulo wall-clock time (the mobile app
+// relies on that to block predictions), so any 'Z' or offset suffix added by
+// serialization is a lie. Parse the naive local time and shift to real UTC.
+// Brazil has no DST since 2019, so the offset is a fixed UTC-3.
+const SAO_PAULO_UTC_OFFSET_MS = 3 * 60 * 60 * 1000;
+
+function kickoffUtcMs(matchDatetime: string): number {
+  const naive = matchDatetime.replace(/(Z|[+-]\d{2}:?\d{2})$/, '');
+  return new Date(`${naive}Z`).getTime() + SAO_PAULO_UTC_OFFSET_MS;
+}
+
 type EspnEvent = {
   date: string;
   status: { type: { name: string; completed: boolean } };
@@ -31,7 +46,7 @@ function mapStatus(status: string): MatchStatus {
 // Match a DB match to an ESPN event by kickoff time proximity (within 2h).
 // World Cup has at most 4 games/day so this is unambiguous in practice.
 function findEspnEvent(matchDatetime: string, events: EspnEvent[]): EspnEvent | null {
-  const kickoff = new Date(matchDatetime).getTime();
+  const kickoff = kickoffUtcMs(matchDatetime);
   const candidates = events.filter((e) => {
     const diff = Math.abs(new Date(e.date).getTime() - kickoff);
     return diff < 2 * 60 * 60 * 1000;
@@ -45,6 +60,9 @@ function findEspnEvent(matchDatetime: string, events: EspnEvent[]): EspnEvent | 
 }
 
 export async function GET(request: NextRequest) {
+  const runStart = Date.now();
+  console.log(`[sync] ===== run started at ${new Date(runStart).toISOString()} =====`);
+
   const isDev = process.env.NODE_ENV === 'development';
   if (!isDev) {
     const cronSecret = process.env.CRON_SECRET;
@@ -53,6 +71,7 @@ export async function GET(request: NextRequest) {
       return Response.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
     }
     if (request.headers.get('Authorization') !== `Bearer ${cronSecret}`) {
+      console.warn('[sync] unauthorized request — Authorization header missing or wrong');
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
   }
@@ -87,11 +106,23 @@ export async function GET(request: NextRequest) {
   if (espnRes.ok) {
     const espnBody = await espnRes.json() as { events: EspnEvent[] };
     espnEvents = espnBody.events;
-    espnHasLive = espnEvents.some((e) => {
-      const s = e.status.type.name;
-      return s === 'STATUS_IN_PROGRESS' || s === 'STATUS_HALFTIME';
-    });
-    const espnStatuses = espnEvents.map((e) => ({ date: e.date, status: e.status.type.name, completed: e.status.type.completed }));
+    // ESPN uses many in-play status names (STATUS_FIRST_HALF, STATUS_SECOND_HALF,
+    // STATUS_HALFTIME, STATUS_IN_PROGRESS, ...) — an allowlist already missed a live
+    // match once. Instead: any event that has kicked off, isn't completed, and is
+    // still inside the 2h regulation window counts as live.
+    const isEventLive = (e: EspnEvent) => {
+      if (e.status.type.completed) return false;
+      const sinceKickoff = Date.now() - new Date(e.date).getTime();
+      return sinceKickoff >= 0 && sinceKickoff < LIVE_WINDOW_MS;
+    };
+    espnHasLive = espnEvents.some(isEventLive);
+    const espnStatuses = espnEvents.map((e) => ({
+      date: e.date,
+      status: e.status.type.name,
+      completed: e.status.type.completed,
+      sinceKickoffMin: Math.round((Date.now() - new Date(e.date).getTime()) / 60000),
+      live: isEventLive(e),
+    }));
     console.log(`[sync] ESPN events: ${espnEvents.length}, espnHasLive: ${espnHasLive}`);
     console.log(`[sync] ESPN event statuses:`, JSON.stringify(espnStatuses));
   } else {
@@ -99,12 +130,34 @@ export async function GET(request: NextRequest) {
     espnHasLive = true;
   }
 
-  // Sync if ESPN shows live games OR our DB has matches stuck IN_PROGRESS
-  const shouldSync = espnHasLive || inProgressInDB.length > 0;
-  console.log(`[sync] shouldSync: ${shouldSync} (espnHasLive=${espnHasLive}, inProgressInDB=${inProgressInDB.length})`);
+  // Second signal, independent of ESPN: our own fixture schedule. Any match not
+  // yet final whose kickoff was within the last 2h is potentially live, so a
+  // missing/mislabeled ESPN event can't blind the sync. Matches drop out of this
+  // window as soon as they're marked COMPLETED, so the extra api-futebol calls
+  // only cover real match windows.
+  const inScheduleWindow = matches.filter((m: any) => {
+    if (!m.apiFutebolId) return false;
+    if (m.matchStatus === 'COMPLETED' || m.matchStatus === 'POSTPONED') return false;
+    const sinceKickoff = Date.now() - kickoffUtcMs(m.matchDatetime);
+    return sinceKickoff >= 0 && sinceKickoff < LIVE_WINDOW_MS;
+  });
+  console.log(`[sync] matches in 2h schedule window: ${inScheduleWindow.length}`);
+  for (const m of inScheduleWindow) {
+    console.log(
+      `[sync] schedule window: match ${m.id} (apiFutebolId=${m.apiFutebolId})` +
+      ` kickoff="${m.matchDatetime}" (SP time → ${new Date(kickoffUtcMs(m.matchDatetime)).toISOString()} UTC)` +
+      ` age=${Math.round((Date.now() - kickoffUtcMs(m.matchDatetime)) / 60000)}min status=${m.matchStatus}`
+    );
+  }
+
+  // Sync if ESPN shows live games, our schedule says a match should be underway,
+  // or our DB has matches stuck IN_PROGRESS
+  const shouldSync = espnHasLive || inScheduleWindow.length > 0 || inProgressInDB.length > 0;
+  console.log(`[sync] shouldSync: ${shouldSync} (espnHasLive=${espnHasLive}, scheduleWindow=${inScheduleWindow.length}, inProgressInDB=${inProgressInDB.length})`);
 
   if (!shouldSync) {
-    console.log('[sync] no active matches per ESPN and no IN_PROGRESS in DB — skipping api-futebol call');
+    console.log('[sync] no live matches per ESPN, none due per schedule, none IN_PROGRESS in DB — skipping api-futebol call');
+    console.log(`[sync] ===== run finished: skipped, duration=${Date.now() - runStart}ms =====`);
     return Response.json({ skipped: true, reason: 'no active matches' });
   }
 
@@ -113,6 +166,8 @@ export async function GET(request: NextRequest) {
     headers: { Authorization: `Bearer ${API_FUTEBOL_KEY}` },
   });
   if (!liveRes.ok) {
+    const body = await liveRes.text().catch(() => '(unreadable)');
+    console.error(`[sync] API-Futebol /ao-vivo failed: ${liveRes.status} ${body}`);
     return Response.json({ error: 'Failed to fetch live data' }, { status: 500 });
   }
   const allLive: any[] = await liveRes.json();
@@ -140,6 +195,41 @@ export async function GET(request: NextRequest) {
   for (const match of liveMatches) {
     const live = liveMap.get(match.apiFutebolId);
 
+    // Never touch a match already COMPLETED in the DB: after the 2h window closes
+    // it, extra time keeps it in the live feed and a plain diff would reopen it
+    // (and pull in extra-time goals — only the 90-minute score counts).
+    if (match.matchStatus === 'COMPLETED') {
+      console.log(`[sync] match ${match.id} already COMPLETED in DB but still in live feed — ignoring`);
+      continue;
+    }
+
+    // 2h update window: past it, regulation is over. Close the match with the
+    // score already in the DB and stop tracking.
+    const matchAge = Date.now() - kickoffUtcMs(match.matchDatetime);
+    if (matchAge > LIVE_WINDOW_MS) {
+      console.log(
+        `[sync] match ${match.id} still in live feed past 2h window` +
+        ` (age=${Math.round(matchAge / 60000)}min) — closing at regulation score` +
+        ` ${match.homeTeamScore}-${match.awayTeamScore}`
+      );
+      const timeoutBody: Record<string, unknown> = { matchStatus: 'COMPLETED' };
+      if (match.homeTeamScore !== null) timeoutBody.homeTeamScore = match.homeTeamScore;
+      if (match.awayTeamScore !== null) timeoutBody.awayTeamScore = match.awayTeamScore;
+      const timeoutRes = await fetch(`${API_URL}/matches/${match.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SYNC_API_SECRET}` },
+        body: JSON.stringify(timeoutBody),
+      });
+      if (timeoutRes.ok) {
+        updated++;
+        console.log(`[sync] match ${match.id} closed at 2h window: ${JSON.stringify(timeoutBody)}`);
+      } else {
+        const errBody = await timeoutRes.text().catch(() => '(unreadable)');
+        console.error(`[sync] failed to close out match ${match.id} at 2h window: ${timeoutRes.status} ${errBody}`);
+      }
+      continue;
+    }
+
     const newStatus = mapStatus(live.status);
     const scoreChanged =
       live.placar_mandante !== match.homeTeamScore ||
@@ -152,13 +242,17 @@ export async function GET(request: NextRequest) {
       ` scoreChanged=${scoreChanged} statusChanged=${statusChanged}`
     );
 
-    if (!scoreChanged && !statusChanged) continue;
+    if (!scoreChanged && !statusChanged) {
+      console.log(`[sync] match ${match.id} unchanged — nothing to update`);
+      continue;
+    }
 
     // Only send scores when they are non-null; the backend rejects null scores.
     const body: Record<string, unknown> = { matchStatus: newStatus };
     if (live.placar_mandante !== null) body.homeTeamScore = live.placar_mandante;
     if (live.placar_visitante !== null) body.awayTeamScore = live.placar_visitante;
 
+    console.log(`[sync] PUT match ${match.id}: ${JSON.stringify(body)}`);
     const updateRes = await fetch(`${API_URL}/matches/${match.id}`, {
       method: 'PUT',
       headers: {
@@ -170,6 +264,7 @@ export async function GET(request: NextRequest) {
 
     if (updateRes.ok) {
       updated++;
+      console.log(`[sync] match ${match.id} updated OK`);
     } else {
       const errBody = await updateRes.text().catch(() => '(unreadable)');
       console.error(`[sync] PUT match ${match.id} failed: ${updateRes.status} ${errBody}`);
@@ -184,8 +279,13 @@ export async function GET(request: NextRequest) {
   console.log(`[sync] stuck IN_PROGRESS not in live feed: ${stuckMatches.length}`);
 
   for (const match of stuckMatches) {
-    const matchAge = Date.now() - new Date(match.matchDatetime).getTime();
-    const isOverdue = matchAge > 2 * 60 * 60 * 1000;
+    const matchAge = Date.now() - kickoffUtcMs(match.matchDatetime);
+    const isOverdue = matchAge > LIVE_WINDOW_MS;
+    console.log(
+      `[sync] checking stuck match ${match.id} (apiFutebolId=${match.apiFutebolId})` +
+      ` DB=${match.homeTeamScore}-${match.awayTeamScore}` +
+      ` age=${Math.round(matchAge / 60000)}min isOverdue=${isOverdue}`
+    );
 
     const partidaRes = await fetch(
       `https://api.api-futebol.com.br/v1/partidas/${match.apiFutebolId}`,
@@ -221,8 +321,13 @@ export async function GET(request: NextRequest) {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SYNC_API_SECRET}` },
         body: JSON.stringify(espnCloseBody),
       });
-      if (fallbackRes.ok) updated++;
-      else console.error(`[sync] failed to close out match ${match.id} via fallback: ${fallbackRes.status}`);
+      if (fallbackRes.ok) {
+        updated++;
+        console.log(`[sync] match ${match.id} closed via fallback: ${JSON.stringify(espnCloseBody)}`);
+      } else {
+        const errBody = await fallbackRes.text().catch(() => '(unreadable)');
+        console.error(`[sync] failed to close out match ${match.id} via fallback: ${fallbackRes.status} ${errBody}`);
+      }
       continue;
     }
 
@@ -252,8 +357,13 @@ export async function GET(request: NextRequest) {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SYNC_API_SECRET}` },
         body: JSON.stringify(forceBody),
       });
-      if (forceRes.ok) updated++;
-      else console.error(`[sync] failed to force-close match ${match.id}: ${forceRes.status}`);
+      if (forceRes.ok) {
+        updated++;
+        console.log(`[sync] match ${match.id} force-closed: ${JSON.stringify(forceBody)}`);
+      } else {
+        const errBody = await forceRes.text().catch(() => '(unreadable)');
+        console.error(`[sync] failed to force-close match ${match.id}: ${forceRes.status} ${errBody}`);
+      }
       continue;
     }
 
@@ -272,9 +382,20 @@ export async function GET(request: NextRequest) {
       body: JSON.stringify(body),
     });
 
-    if (updateRes.ok) updated++;
-    else console.error(`[sync] failed to close out match ${match.id}: ${updateRes.status}`);
+    if (updateRes.ok) {
+      updated++;
+      console.log(`[sync] match ${match.id} closed via API-Futebol: ${JSON.stringify(body)}`);
+    } else {
+      const errBody = await updateRes.text().catch(() => '(unreadable)');
+      console.error(`[sync] failed to close out match ${match.id}: ${updateRes.status} ${errBody}`);
+    }
   }
 
+  console.log(
+    `[sync] ===== run finished: updated=${updated}` +
+    ` checked=${liveMatches.length + stuckMatches.length}` +
+    ` (live=${liveMatches.length}, stuck=${stuckMatches.length})` +
+    ` duration=${Date.now() - runStart}ms =====`
+  );
   return Response.json({ updated, checked: liveMatches.length + stuckMatches.length });
 }
